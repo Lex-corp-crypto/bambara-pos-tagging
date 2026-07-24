@@ -17,4 +17,4 @@ Pour préparer le passage aux architectures profondes et aux modèles de langue 
 - Validation des Tenseurs : Vérification synchrone des dimensions de lots (*batch dimensions*) obtenues via le `DataLoader` (formes strictes `[16, 64]` pour `input_ids`, `attention_mask` et `labels`).
 
 ## 4. Statut Actuel et Perspectives
-Le pipeline d'ingestion et de préparation de données est 100% fonctionnel et prêt pour l'entraînement[cite: 1]. La prochaine étape (Semaines 7 & 8) consistera à affiner les étiquettes avec la validation d'experts linguistiques (DNFLN / Nouhoum) et à lancer la première boucle d'entraînement du modèle séquentiel complet.
+Le pipeline d'ingestion et de préparation de données est 100% fonctionnel et prêt pour l'entraînement. La prochaine étape (Semaines 7 & 8) consistera à affiner les étiquettes avec la validation d'experts linguistiques (DNFLN / Nouhoum) et à lancer la première boucle d'entraînement du modèle séquentiel complet.
