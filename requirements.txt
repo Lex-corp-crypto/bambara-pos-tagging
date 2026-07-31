@@ -1,0 +1,12 @@
+# requirements for the bambara-pos-tagging project
+# After installation, install the SpaCy French model separately:
+# python -m spacy download fr_core_news_sm
+
+torch>=2.0.0
+transformers>=4.40.0
+datasets>=2.14.0
+huggingface_hub>=0.16.0
+pandas>=2.0.0
+tqdm>=4.65.0
+spacy>=3.7.0
+nltk>=3.8.1
