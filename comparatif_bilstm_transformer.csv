@@ -1,0 +1,8 @@
+Token,BiLSTM,XLM-RoBERTa,Accord
+Amadou,NOM,NOM,True
+bɛ,AUX,AUX,True
+kalan,NOM,NOM,True
+kɛ,VERBE,VERBE,True
+so,NOM,NOM,True
+kɔnɔ,POSTP,POSTP,True
+.,PUNCT,PUNCT,True
