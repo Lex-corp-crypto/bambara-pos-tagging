@@ -1,25 +1,36 @@
 # Rapport Hebdomadaire - Semaines 9 & 10
-**Période :** Août 2026  
-**Projet :** Étiquetage Morphosyntaxique (POS Tagging) du Bambara via PyTorch  
-**Étudiant :** Amadou H. TRAORE  
 
-## 1. Objectif des Semaines 9 & 10 : Passation à l'Échelle et Bidirectionnalité
-L'objectif central de cette phase était de faire passer notre modèle d'étiquetage morphosyntaxique (POS Tagging) à l'échelle industrielle en exploitant l'intégralité du corpus annoté *Bayelemabaga* (**37 392 phrases**), tout en basculant l'architecture vers un LSTM bidirectionnel (**BiLSTM**) afin d'optimiser la capture du contexte linguistique en Bambara.
+**Période :** Août 2026
+**Projet :** Étiquetage Morphosyntaxique (POS Tagging) du Bambara via PyTorch
+**Étudiant :** Amadou H. TRAORE
 
-## 2. Travaux Réalisés & Architecture MLOps
-* **Ingestion et Structuration à Grande Échelle :** Parsing du corpus complet `bambara_pos_prep.conll` et répartition stricte 80/10/10 entre les ensembles d'entraînement (train), de validation (dev) et de test (test).
-* **Architecture BiLSTM (`LSTMTaggerWithBatch`) :** Passage à une couche LSTM bidirectionnelle (`bidirectional=True`) couplée à un embedding de dimension 128 et un état caché de dimension 256. Cela permet au modèle d'analyser simultanément le contexte gauche et droit de chaque token[cite: 4].
-* **Pipeline d'Entraînement & Sécurisation MLOps :**
-  * Alignement et rembourrage dynamique via `collate_fn_padd` et `pad_sequence`.
-  * Masquage propre des jetons de rembourrage dans la perte (`nn.NLLLoss(ignore_index=0)`).
-  * Implémentation d'un régulateur de gradient (`clip_grad_norm_` à 1.0) et d'un ajustement dynamique du taux d'apprentissage via `ReduceLROnPlateau`.
-  * Sauvegarde automatique du meilleur modèle (`bambara_pos_best.pth`) et exportation des mappings au format JSON (`bambara_tag_mappings_final.json`).
+## 1. Objectif des Semaines 9 & 10 : Passage à l'Échelle et Modélisation BiLSTM
 
-## 3. Gestion des Difficultés & Résolution des Bugs
-* **Linguistique - Contextualisme du Bambara :** Un LSTM unidirectionnel limitait la capture des postpositions ou marqueurs prédicatifs postérieurs au mot. L'activation de la bidirectionnalité a permis de doubler la capacité d'analyse contextuelle[cite: 4].
-* **Dépaquetage des Batches (`ValueError: too many values to unpack`) :** La fonction `collate_fn_padd` renvoyant des tuples de 3 éléments `(inputs, targets, lengths)`, les boucles d'évaluation standards plantaient. Toutes les boucles d'entraînement et d'évaluation ont été réajustées pour capturer explicitement les 3 variables.
-* **Format des Entrées Embedding (`TypeError: embedding()... must be Tensor, not str`) :** Des chaînes de caractères brutes passaient dans la couche d'embedding suite à une réinitialisation de session. La classe `BambaraPOSDataset` a été corrigée pour forcer la conversion des tokens texte en entiers (`torch.long`) via les dictionnaires `word_to_ix` et `label2id`.
-* **Variables Extérieures Non Définies (`NameError`) :** La réinitialisation du kernel effaçait le dictionnaire `tag_to_ix_bambara` ou la classe du modèle. Le code a été restructuré dans un pipeline unique et autonome.
+L'objectif principal de cette phase était d'entraîner notre modèle d'étiquetage morphosyntaxique sur l'intégralité du corpus annoté *Bayelemabaga* (**37 392 phrases**), en migrant vers une architecture LSTM bidirectionnelle (**BiLSTM**) optimisée pour capturer les dépendances contextuelles bidirectionnelles du Bambara.
+
+## 2. Travaux Réalisés & Performance du Modèle
+
+* **Ingestion et Découpage du Corpus :** Ingestion complète du fichier `bambara_pos_prep.conll` (37 392 phrases) avec répartition 80/10/10 (Train: 29 913 | Dev: 3 739 | Test: 3 740 phrases).
+* **Architecture BiLSTM (`LSTMTaggerWithBatch`) :** Embedding de dimension 128, couche LSTM bidirectionnelle de dimension cachée 256, et optimiseur Adam (lr = 0.001) couplé à un scheduler `ReduceLROnPlateau`.
+* **Résultats d'Évaluation :**
+  * **Meilleure Exactitude en Validation (Dev Acc) :** **92,84%** (Époque 3)
+  * **Exactitude Finale sur le Jeu de Test (Test Acc) :** **95,09%** (Loss Test = 0.1893)
+  * **Couverture des Noms et Ponctuations :** F1-score de **0,97** sur la classe majoritaire `NOM` et **0,93** sur `PUNCT`.
+
+## 3. Difficultés Rencontrées & Diagnostic
+
+* **Erreurs de Code Résolues :**
+  * Correction du dépaquetage de `DataLoader` (`for inputs, targets, lengths in test_loader`) lié à `collate_fn_padd`.
+  * Résolution des types de données dans l'Embedding via le réalignement de `BambaraPOSDataset`.
+* **Problème de Déséquilibre des Classes (*Class Imbalance*) :**
+  * Le dictionnaire retenu sur ce run comporte 6 classes (`ADJ`, `NOM`, `PRON`, `PUNCT`, `VERBE`, `<PAD>`).
+  * Les classes minoritaires comme `ADJ` (145 tokens) et `PRON` (940 tokens) n'ont pas été prédites par le modèle (F1-score = 0.00), masquées par le poids numérique massif des `NOM` (57 592 tokens).
 
 ## 4. Statut Actuel et Perspectives
-Le pipeline d'entraînement est désormais 100% stable, entraîné sur un corpus massif de 37k phrases et capable d'évaluer ses performances sur le jeu de test avec génération d'un rapport de classification complet (`classification_report`). La prochaine étape (Semaine 11) sera consacrée à l'implémentation de la fonction d'inférence directe pour la prédiction sur du texte brut Bambara en environnement de production.
+
+Le pipeline global est fonctionnel, rapide (exécuté sur CPU) et atteint une exactitude globale remarquable de **95,09%**.
+
+**Perspectives pour la Semaine 11 :**
+
+* **Rééquilibrage des Poids de Perte (*Class Weights*) :** Intégrer `weight` dans `nn.NLLLoss` pour forcer le modèle à pénaliser les erreurs sur les classes rares (`ADJ`, `PRON`).
+* **Réintégration des Tags Étendus :** Corriger le filtre pour réintroduire les marqueurs auxilaires (`AUX`), postpositions (`POSTP`) et déterminants (`DET`).
