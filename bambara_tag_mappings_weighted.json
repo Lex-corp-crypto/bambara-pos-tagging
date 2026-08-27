@@ -1,0 +1,45 @@
+{
+  "id2label": {
+    "0": "<PAD>",
+    "1": "ADJ",
+    "2": "ADV",
+    "3": "AUX",
+    "4": "CONJ",
+    "5": "DET",
+    "6": "NOM",
+    "7": "PART",
+    "8": "POSTP",
+    "9": "PRON",
+    "10": "PUNCT",
+    "11": "VERBE"
+  },
+  "label2id": {
+    "<PAD>": 0,
+    "ADJ": 1,
+    "ADV": 2,
+    "AUX": 3,
+    "CONJ": 4,
+    "DET": 5,
+    "NOM": 6,
+    "PART": 7,
+    "POSTP": 8,
+    "PRON": 9,
+    "PUNCT": 10,
+    "VERBE": 11
+  },
+  "valid_tags": [
+    "<PAD>",
+    "ADJ",
+    "ADV",
+    "AUX",
+    "CONJ",
+    "DET",
+    "NOM",
+    "PART",
+    "POSTP",
+    "PRON",
+    "PUNCT",
+    "VERBE"
+  ],
+  "test_accuracy": 0.998469884545834
+}
