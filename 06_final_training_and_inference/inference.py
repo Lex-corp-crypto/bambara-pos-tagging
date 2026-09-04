@@ -43,18 +43,3 @@ class BambaraPOSTagger:
         return [self.tag(s) for s in sentences]
 
 
-if __name__ == "__main__":
-    # Petit test en ligne de commande : python inference.py "ta phrase en bambara"
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Tague une phrase en bambara.")
-    parser.add_argument("phrase", type=str, help="Phrase à taguer")
-    parser.add_argument(
-        "--checkpoint", type=str, default="models/bambara_pos_best.pth",
-        help="Chemin vers le checkpoint du modèle"
-    )
-    args = parser.parse_args()
-
-    tagger = BambaraPOSTagger(checkpoint_path=args.checkpoint)
-    for mot, tag in tagger.tag(args.phrase):
-        print(f"{mot}\t{tag}")
