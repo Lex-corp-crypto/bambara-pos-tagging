@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import accuracy_score, classification_report
 
 
 # ---------------------------------------------------------------------------
@@ -299,3 +301,175 @@ def per_tag_f1(report_dict):
         if tag in VALID_TAGS and tag != "<PAD>" and isinstance(vals, dict)
     }
     return dict(sorted(scores.items(), key=lambda x: x[1]))
+
+
+# --- Ajouts pour le module 07 : SentencePiece ---
+
+from collections import Counter as _Counter
+
+
+def export_raw_text(corpus_data, output_path):
+    """Extrait uniquement les mots (sans les tags) pour entraîner SentencePiece."""
+    with open(output_path, "w", encoding="utf-8") as f:
+        for words, _ in corpus_data:
+            f.write(" ".join(words) + "\n")
+
+
+def encode_sentence_with_tags(words, tags, sp, scheme="broadcast"):
+    """
+    Découpe chaque mot en sous-tokens SentencePiece et propage son tag.
+    scheme="broadcast" : chaque sous-token reçoit le tag du mot entier.
+    scheme="bio"        : premier sous-token -> B-TAG, suivants -> I-TAG.
+    """
+    subword_tokens, subword_tags = [], []
+    for word, tag in zip(words, tags):
+        pieces = sp.encode(word, out_type=str)
+        if not pieces:
+            continue
+        for i, piece in enumerate(pieces):
+            subword_tokens.append(piece)
+            if scheme == "broadcast":
+                subword_tags.append(tag)
+            elif scheme == "bio":
+                subword_tags.append(f"B-{tag}" if i == 0 else f"I-{tag}")
+    return subword_tokens, subword_tags
+
+
+def build_bio_tagset(valid_tags):
+    """Double le tagset : B-TAG et I-TAG pour chaque tag, en gardant <PAD>."""
+    bio_tags = ["<PAD>"]
+    for tag in valid_tags:
+        if tag == "<PAD>":
+            continue
+        bio_tags += [f"B-{tag}", f"I-{tag}"]
+    label2id_bio = {t: i for i, t in enumerate(bio_tags)}
+    id2label_bio = {i: t for t, i in label2id_bio.items()}
+    return label2id_bio, id2label_bio
+
+
+def _resolve_word_tag(tags_for_word, scheme):
+    if scheme == "bio":
+        return tags_for_word[0].replace("B-", "").replace("I-", "")
+    return _Counter(tags_for_word).most_common(1)[0][0]
+
+
+def reconstruct_word_tags(subword_tokens, predicted_tags, scheme="broadcast"):
+    """
+    Regroupe les sous-tokens par mot (un nouveau mot commence à chaque '▁')
+    et déduit un seul tag par mot à partir des prédictions sous-token.
+    """
+    words_tags, current_tags = [], []
+    for token, tag in zip(subword_tokens, predicted_tags):
+        if token.startswith("▁") and current_tags:
+            words_tags.append(_resolve_word_tag(current_tags, scheme))
+            current_tags = []
+        current_tags.append(tag)
+    if current_tags:
+        words_tags.append(_resolve_word_tag(current_tags, scheme))
+    return words_tags
+
+
+class BambaraSubwordDataset(Dataset):
+    """Équivalent de BambaraPOSDataset, mais au niveau sous-mot (SentencePiece)."""
+    def __init__(self, data, sp, tag_to_ix, scheme="broadcast"):
+        self.data = data
+        self.sp = sp
+        self.tag_to_ix = tag_to_ix
+        self.scheme = scheme
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        words, tags = self.data[idx]
+        subword_tokens, subword_tags = encode_sentence_with_tags(
+            words, tags, self.sp, self.scheme
+        )
+        token_ids = [self.sp.piece_to_id(t) for t in subword_tokens]
+        tag_ids = [self.tag_to_ix.get(t, 0) for t in subword_tags]
+        return (torch.tensor(token_ids, dtype=torch.long),
+                torch.tensor(tag_ids, dtype=torch.long))
+
+
+def run_training(train_data, val_data, dataset_cls, dataset_args, vocab_size,
+                  tagset_size, hyperparams, device,
+                  patience=3, max_epochs=30, checkpoint_path=None, verbose=True):
+    """
+    Boucle d'entraînement/validation générique avec early stopping et sauvegarde
+    du meilleur modèle. dataset_cls/dataset_args permettent de réutiliser cette
+    même fonction pour BambaraPOSDataset (mot-entier) ET BambaraSubwordDataset.
+    """
+    train_loader = DataLoader(
+        dataset_cls(train_data, *dataset_args),
+        batch_size=hyperparams["batch_size"], shuffle=True, collate_fn=collate_fn_padd
+    )
+    val_loader = DataLoader(
+        dataset_cls(val_data, *dataset_args),
+        batch_size=hyperparams["batch_size"], shuffle=False, collate_fn=collate_fn_padd
+    )
+
+    model = LSTMTaggerWithBatch(
+        hyperparams["embedding_dim"], hyperparams["hidden_dim"], vocab_size, tagset_size
+    ).to(device)
+
+    train_labels_flat = [t for _, tags in train_data for t in tags]
+    optimizer = torch.optim.AdamW(model.parameters(), lr=hyperparams["learning_rate"], weight_decay=0.01)
+    loss_fn = nn.NLLLoss(ignore_index=0)
+
+    history = {"train_loss": [], "val_loss": [], "val_acc": []}
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
+
+    for epoch in range(max_epochs):
+        train_loss = train_epoch(model, train_loader, optimizer, loss_fn, device)
+        val_loss, val_acc = evaluate(model, val_loader, loss_fn, tagset_size, device)
+
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        if verbose:
+            print(f"Époque {epoch+1:2d} | Train Loss : {train_loss:.4f} | "
+                  f"Val Loss : {val_loss:.4f} | Val Acc : {val_acc:.2f}%")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
+            if checkpoint_path is not None:
+                torch.save({"model_state_dict": model.state_dict(), "hyperparams": hyperparams}, checkpoint_path)
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                if verbose:
+                    print(f"Arrêt anticipé à l'époque {epoch+1}.")
+                break
+
+    return model, history, best_val_loss
+
+def evaluate_subword_model_word_level(model, sentences, sp, id2label, scheme, device):
+    """
+    Évalue un modèle entraîné sur des sous-tokens SentencePiece, au niveau mot.
+    Reconstruit un tag par mot à partir des prédictions sous-token avant de comparer
+    aux vrais tags, pour rester comparable aux évaluations mot-entier (05/06).
+    """
+    model.eval()
+    all_true, all_pred = [], []
+
+    with torch.no_grad():
+        for words, tags in sentences:
+            subword_tokens, _ = encode_sentence_with_tags(words, tags, sp, scheme)
+            if not subword_tokens:
+                continue
+            ids = [sp.piece_to_id(t) for t in subword_tokens]
+            input_tensor = torch.tensor([ids], dtype=torch.long).to(device)
+            preds = torch.argmax(model(input_tensor), dim=-1).squeeze(0).cpu().tolist()
+            predicted_tags = [id2label[p] for p in preds]
+
+            reconstructed = reconstruct_word_tags(subword_tokens, predicted_tags, scheme)
+            n = min(len(reconstructed), len(tags))
+            all_true.extend(tags[:n])
+            all_pred.extend(reconstructed[:n])
+
+    accuracy = accuracy_score(all_true, all_pred)
+    report = classification_report(all_true, all_pred, zero_division=0)
+    return accuracy, report
