@@ -427,6 +427,16 @@ def run_training(train_data, val_data, dataset_cls, dataset_args, vocab_size,
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
+            if checkpoint_path is not None:
+                torch.save({
+                    "model_state_dict": model.state_dict(),
+                    "hyperparams": hyperparams,
+                    "vocab_size": vocab_size,
+                    "tagset_size": tagset_size,
+                }, checkpoint_path)
 
         if verbose:
             print(f"Époque {epoch+1:2d} | Train Loss : {train_loss:.4f} | "
@@ -445,6 +455,7 @@ def run_training(train_data, val_data, dataset_cls, dataset_args, vocab_size,
                 break
 
     return model, history, best_val_loss
+    
 
 def evaluate_subword_model_word_level(model, sentences, sp, id2label, scheme, device):
     """
@@ -473,3 +484,231 @@ def evaluate_subword_model_word_level(model, sentences, sp, id2label, scheme, de
     accuracy = accuracy_score(all_true, all_pred)
     report = classification_report(all_true, all_pred, zero_division=0)
     return accuracy, report
+
+# --- Ajouts pour les modules 08 et 09 ---
+
+from bs4 import BeautifulSoup
+from collections import Counter
+
+CORBAMA_TAG_MAPPING = {
+    "n": "NOM", "n.prop": "NOM",
+    "v": "VERBE", "vq": "VERBE", "ptcp": "VERBE",
+    "pers": "PRON", "prn": "PRON",
+    "pm": "AUX", "cop": "AUX",
+    "pp": "POSTP", "prep": "POSTP",
+    "dtm": "DET",
+    "conj": "CONJ",
+    "prt": "PART", "intj": "PART", "onomat": "PART",
+    "adj": "ADJ", "num": "ADJ",
+    "adv": "ADV",
+    "mrph": "PART",
+}
+
+
+def _clean_text(raw):
+    """Retire le caractère BOM invisible (U+FEFF) qui traîne en début de phrase."""
+    return raw.replace("\ufeff", "").strip()
+
+
+def parse_corbama_file(filepath):
+    """
+    Parse un fichier .dis.html de CorBaMa. Mots (span.w) et ponctuation (span.c)
+    sont traités DANS L'ORDRE d'apparition. Retourne une liste de phrases
+    (mots, tags_fins, tags_mappes).
+    """
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        soup = BeautifulSoup(f.read(), "html.parser")
+
+    sentences = []
+    for sent_span in soup.find_all("span", class_="sent"):
+        annot = sent_span.find("span", class_="annot")
+        if annot is None:
+            continue
+        words, fine_tags, mapped_tags = [], [], []
+        for span in annot.find_all("span", class_=["w", "c"], recursive=False):
+            classes = span.get("class", [])
+            text = _clean_text(span.contents[0]) if span.contents else ""
+            if not text:
+                continue
+            if "c" in classes:
+                words.append(text)
+                fine_tags.append("PUNCT")
+                mapped_tags.append("PUNCT")
+            else:
+                ps_tag = span.find("sub", class_="ps")
+                if ps_tag is None:
+                    continue
+                fine_tag = ps_tag.text.strip()
+                mapped_tag = CORBAMA_TAG_MAPPING.get(
+                    fine_tag, CORBAMA_TAG_MAPPING.get(fine_tag.split("/")[0], "NOM")
+                )
+                words.append(text)
+                fine_tags.append(fine_tag)
+                mapped_tags.append(mapped_tag)
+        if words:
+            sentences.append((words, fine_tags, mapped_tags))
+    return sentences
+
+
+def export_corbama_to_conll(sentences, output_path, tag_level="mapped"):
+    """tag_level : 'mapped' (11 tags, cohérent avec Bayelemabaga) ou 'fine' (24 tags CorBaMa)."""
+    with open(output_path, "w", encoding="utf-8") as f:
+        for words, fine_tags, mapped_tags in sentences:
+            tags = mapped_tags if tag_level == "mapped" else fine_tags
+            for w, t in zip(words, tags):
+                f.write(f"{w}\t{t}\n")
+            f.write("\n")
+
+
+def get_word_morpheme_pairs(filepath):
+    """Pour diagnostic : mot entier -> liste de ses vrais morphèmes (span.m), quand décomposé."""
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        soup = BeautifulSoup(f.read(), "html.parser")
+    pairs = []
+    for w_span in soup.find_all("span", class_="w"):
+        word_text = _clean_text(w_span.contents[0]) if w_span.contents else ""
+        m_spans = w_span.find_all("span", class_="m")
+        morphemes = [_clean_text(m.contents[0]) for m in m_spans if m.contents]
+        morphemes = [m for m in morphemes if m]
+        if word_text and len(morphemes) >= 2:
+            pairs.append((word_text, morphemes))
+    return pairs
+
+
+def extract_morpheme_vocabulary(html_filepaths, top_k=200):
+    """Liste des morphèmes réels les plus fréquents de CorBaMa (pour guider un nouveau tokeniseur)."""
+    morpheme_counter = Counter()
+    for fp in html_filepaths:
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            soup = BeautifulSoup(f.read(), "html.parser")
+        for m_span in soup.find_all("span", class_="m"):
+            text = _clean_text(m_span.contents[0]) if m_span.contents else ""
+            if text and len(text) >= 2:
+                morpheme_counter[text.lower()] += 1
+    return [m for m, _ in morpheme_counter.most_common(top_k)]
+
+
+# --- BAMBARA_EXTENDED_LEXICON, version 2 ---
+# Mise à jour à partir du vocabulaire fonctionnel confirmé par CorBaMa
+# (catégories fiables : pm, cop, pp, dtm — mappées vers AUX, AUX, POSTP, DET).
+#
+# IMPORTANT : 8 entrées existantes ont été CORRIGÉES suite à un désaccord avec
+# CorBaMa (source linguistique validée, prioritaire sur notre heuristique de
+# fréquence). Le changement le plus significatif : "ye" (un des mots les plus
+# fréquents du bambara) est majoritairement une POSTPOSITION dans CorBaMa
+# (1300 occurrences) et non un AUX (1065 occurrences pm+cop) comme on le
+# supposait. Cette correction change le comportement du pipeline hybride
+# (module 06) et de tag_with_lexicon (module 04) À PARTIR DE MAINTENANT, mais
+# NE RÉGÉNÈRE PAS automatiquement bambara_pos_prep_retagged.conll, qui reste
+# tel qu'il a été généré avec l'ancien lexique — à refaire manuellement si on
+# veut propager la correction jusqu'au corpus d'entraînement.
+
+BAMBARA_EXTENDED_LEXICON = {
+    # Pronoms personnels et relatifs
+    'a': 'PRON', 'i': 'PRON', 'u': 'PRON', 'n': 'PRON', 'ne': 'PRON',
+    'an': 'PRON', 'aw': 'PRON', 'e': 'PRON', 'olu': 'PRON', 'ale': 'PRON',
+    'minnu': 'PRON',
+
+    # Marques verbales / auxiliaires / copules (pm + cop dans CorBaMa)
+    'ka': 'AUX', 'tɛ': 'AUX', 'tun': 'AUX', 'be': 'AUX', 'te': 'AUX',
+    'b': 'AUX', 'y': 'AUX', 'k': 'AUX',
+    'don': 'AUX',      # CORRIGÉ (était PART) : cop dans CorBaMa (210 occurrences)
+    'ko': 'AUX',       # CORRIGÉ (était CONJ) : pm/cop dominant dans CorBaMa (680 occurrences)
+    "k'": 'AUX', "b'": 'AUX', 'bè': 'AUX', "y'": 'AUX', 'tè': 'AUX',
+    "k’": 'AUX', 'ti': 'AUX', 'kana': 'AUX', "y’": 'AUX', 'man': 'AUX',
+    'mana': 'AUX', "b’": 'AUX', "m'": 'AUX', 'bɛna': 'AUX', 'ya': 'AUX',
+    'tɛna': 'AUX', "m’": 'AUX', 'do': 'AUX', "kan'": 'AUX', 'bɛka': 'AUX',
+    'tɛka': 'AUX',
+
+    # Postpositions (pp dans CorBaMa)
+    'la': 'POSTP', 'na': 'POSTP', 'kan': 'POSTP', 'fɛ': 'POSTP',
+    'kɔnɔ': 'POSTP', 'bolo': 'POSTP', 'kɔ': 'POSTP',
+    'ye': 'POSTP',     # CORRIGÉ (était AUX) : dominant comme postposition dans CorBaMa (1300 vs 1065)
+    'ma': 'POSTP',     # CORRIGÉ (était AUX) : dominant comme postposition dans CorBaMa (365 vs 215)
+    'cɛ': 'POSTP',     # CORRIGÉ (était NOM) : dominant comme postposition dans CorBaMa (75 vs 61)
+    'rɔ': 'POSTP', 'fè': 'POSTP', 'kama': 'POSTP', 'kɔfɛ': 'POSTP',
+    'kosɔn': 'POSTP', 'mɔ': 'POSTP', 'nɔfɛ': 'POSTP', 'kunna': 'POSTP',
+    'lɔ': 'POSTP', 'kosòn': 'POSTP', 'jukɔrɔ': 'POSTP', 'cɛla': 'POSTP',
+
+    # Déterminants / démonstratifs / quantifieurs (dtm dans CorBaMa)
+    'o': 'DET', 'nin': 'DET', 'dɔ': 'DET', 'si': 'DET', 'bɛɛ': 'DET', 'in': 'DET',
+    'min': 'DET',      # CORRIGÉ (était PRON) : dominant comme déterminant dans CorBaMa (271 vs 226)
+    'yɛrɛ': 'DET',     # CORRIGÉ (était PRON) : dominant comme déterminant dans CorBaMa (172 vs 3 PART)
+    'dɔrɔn': 'DET',    # CORRIGÉ (était PART) : uniquement déterminant dans CorBaMa (13 occurrences)
+    'ninnu': 'DET', 'wɛrɛ': 'DET', 'yèrè': 'DET', 'damadɔ': 'DET',
+    'wɛ́rɛ': 'DET', 'wèrè': 'DET', 'damadɔw': 'DET', 'pe': 'DET',
+    'wèrèw': 'DET', "man'": 'AUX', 'yɛrɛw': 'DET',
+
+    # Conjonctions
+    'ani': 'CONJ', 'ni': 'CONJ', 'nka': 'CONJ',
+
+    # Particules
+    'de': 'PART',
+
+    # Adverbes fréquents
+    'fana': 'ADV', 'yen': 'ADV',
+
+    # Verbes fréquents
+    'se': 'VERBE', 'sɔrɔ': 'VERBE', 'bɔ': 'VERBE', 'taa': 'VERBE', 'to': 'VERBE',
+    'dɔn': 'VERBE', 'fɔ': 'VERBE', 'di': 'VERBE', 'da': 'VERBE', 'kɛ': 'VERBE',
+    'nana': 'VERBE', 'fo': 'VERBE',
+
+    # Noms fréquents (dont noms propres)
+    'ala': 'NOM', 'mɔgɔ': 'NOM', 'fɛn': 'NOM', 'dugu': 'NOM',
+    'cogo': 'NOM', 'ɲɔgɔn': 'NOM', 'tuma': 'NOM', 'yezu': 'NOM',
+
+    # Numéral / quantifieur
+    'kelen': 'ADJ',
+}
+
+# Mots volontairement NON ajoutés malgré leur fréquence dans les catégories
+# fiables : genuinement ambigus selon le contexte dans CorBaMa (pureté < 90%).
+# Un lexique statique leur ferait plus de mal que de bien.
+CORBAMA_AMBIGUOUS_EXCLUDED = {
+    'bi': {'AUX': 240, 'NOM': 34, 'ADV': 62, 'ADJ': 8},
+    "t'": {'AUX': 63, 'VERBE': 12},
+    'wɛrɛw': {'DET': 29, 'ADJ': 20},
+    'dò': {'PRON': 4, 'DET': 26},
+    'bèe': {'DET': 21, 'PRON': 6},
+    'kònò': {'POSTP': 21, 'NOM': 3},
+    'ɲɛna': {'POSTP': 14, 'VERBE': 7},
+    'dama': {'DET': 18, 'NOM': 3},
+    'kò': {'POSTP': 9, 'NOM': 5},
+    'bèè': {'DET': 10, 'PRON': 4},
+    'cè': {'NOM': 2, 'POSTP': 11},
+    'minw': {'DET': 7, 'PRON': 4},
+    'kɛrɛfɛ': {'POSTP': 8, 'ADV': 1},
+    'bara': {'POSTP': 6, 'NOM': 1},
+    'dɔwɛrɛw': {'DET': 4, 'PRON': 1},
+}
+
+def build_fine_tagset(corpus_data):
+    """
+    Construit label2id/id2label pour un tagset détecté automatiquement à partir
+    des données (utilisé pour le tagset fin de CorBaMa, 24 catégories linguistiques
+    + PUNCT + <PAD> = 26 classes au total).
+    """
+    tags = sorted(set(t for _, tags in corpus_data for t in tags))
+    label2id_fine = {"<PAD>": 0}
+    for t in tags:
+        if t not in label2id_fine:
+            label2id_fine[t] = len(label2id_fine)
+    id2label_fine = {i: t for t, i in label2id_fine.items()}
+    return label2id_fine, id2label_fine
+
+def load_checkpoint_generic(path, device):
+    """
+    Recharge un modèle entraîné par la run_training générique (modules 07/09/10).
+    Ne contient PAS le vocabulaire : à reconstruire séparément (build_vocab sur
+    le même train split pour un modèle mot-entier, ou recharger le .model
+    SentencePiece pour un modèle sous-mots).
+    """
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    hp = checkpoint["hyperparams"]
+    model = LSTMTaggerWithBatch(
+        hp["embedding_dim"], hp["hidden_dim"],
+        checkpoint["vocab_size"], checkpoint["tagset_size"]
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    return model

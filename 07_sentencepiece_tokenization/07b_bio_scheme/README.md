@@ -1,15 +1,13 @@
 # 07b — SentencePiece, option BIO
 
 - [Construction du tagset BIO](sentencepiece_bio.ipynb#bio-tagset)
-- [Entraînement du modèle](sentencepiece_bio.ipynb#training)
+- [Entraînement du modèle v1](sentencepiece_bio.ipynb#training)
 - [Évaluation au niveau mot](sentencepiece_bio.ipynb#evaluation)
+- [Mise à jour v2 (données CorBaMa)](sentencepiece_bio.ipynb#v2-corbama)
 
-Réutilise le modèle SentencePiece entraîné dans `07a_broadcast_scheme/`. Le
-premier sous-token d'un mot reçoit `B-TAG`, les suivants `I-TAG` — schéma BIO
-standard. Tagset : 23 classes (`<PAD>` + B/I pour chacun des 11 tags).
+Réutilise le SentencePiece v1 de `07a`, puis compare avec le v2 (aussi entraîné
+dans `07a`) sur le schéma BIO. Tagset : 22 classes (`<PAD>` + B/I pour chacun
+des 10 tags hors PUNCT, PUNCT restant simple).
 
-**Prérequis** : exécuter `07a_broadcast_scheme` au moins une fois avant ce
-notebook, pour que `bambara_sp.model` existe.
-
-**Limite** : tagset deux fois plus grand pour un corpus qui reste modeste
-(640k tokens), donc plus de paramètres à apprendre côté couche de sortie.
+**Prérequis** : exécuter `07a_broadcast_scheme` en entier (v1 ET v2) avant ce
+notebook, et le module 08 pour `corbama_corpus.tsv`.
